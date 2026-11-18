@@ -1,16 +1,17 @@
 """Configure the Reflex application, database URL, and UI plugins."""
 
 import os
-from pathlib import Path
 
 import reflex as rx
 import reflex_xy
 
-database_path = Path(__file__).resolve().with_name("globe_check.db")
-database_url = os.getenv(
-    "REFLEX_DB_URL",
-    f"sqlite:///{database_path.as_posix()}",
-)
+# PostgreSQL is the default database. Override with REFLEX_DB_URL, e.g.
+#   postgresql+psycopg://user:password@host:5432/dbname
+#   sqlite:///globe_check.db   (local fallback without PostgreSQL)
+# Without a user/password, psycopg connects as the current OS user, which is
+# how a Homebrew PostgreSQL install is set up by default.
+DEFAULT_DATABASE_URL = "postgresql+psycopg://localhost:5432/antarctic_sea_ice"
+database_url = os.getenv("REFLEX_DB_URL", DEFAULT_DATABASE_URL)
 
 config = rx.Config(
     app_name="antarctic_sea_ice_dashboard",
