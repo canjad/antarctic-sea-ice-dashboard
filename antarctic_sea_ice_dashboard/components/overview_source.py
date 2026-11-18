@@ -74,6 +74,35 @@ def fixed_date_input(
     )
 
 
+def option_select(
+    name: str,
+    label: str,
+    value: rx.Var,
+    options: list[tuple[str, str]],
+    help_text: str,
+) -> rx.Component:
+    return rx.el.div(
+        rx.el.label(
+            label,
+            html_for=f"source-{name}",
+            class_name="mb-1 block text-[11px] font-medium text-slate-600",
+        ),
+        rx.el.select(
+            *[rx.el.option(text, value=key) for key, text in options],
+            id=f"source-{name}",
+            name=name,
+            default_value=value,
+            disabled=D.source_saving | D.loading | D.importing,
+            class_name="min-h-9 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 focus-visible:outline-2 focus-visible:outline-sky-700",
+        ),
+        rx.el.p(
+            help_text,
+            class_name="mt-1 text-[10px] leading-relaxed text-slate-600",
+        ),
+        class_name="min-w-0",
+    )
+
+
 def active_source_row(dataset: DatasetSummary) -> rx.Component:
     return rx.el.div(
         rx.el.button(
@@ -172,6 +201,33 @@ def source_configuration() -> rx.Component:
             rx.el.div(
                 rx.foreach(D.mapping_fields, mapping_select),
                 class_name="grid grid-cols-1 gap-3 md:grid-cols-2",
+            ),
+            rx.el.div(
+                option_select(
+                    "value_scale",
+                    "Concentration / prediction units",
+                    D.value_scale,
+                    [
+                        ("auto", "Auto-detect"),
+                        ("fraction", "0–1 fraction"),
+                        ("percent", "0–100 percent"),
+                    ],
+                    "Auto-detect reads the value distribution. Choose explicitly if a file has only a few ice cells or mostly 0/1 values.",
+                ),
+                option_select(
+                    "prediction_type",
+                    "Prediction type",
+                    D.prediction_type,
+                    [
+                        ("concentration", "Sea-ice concentration"),
+                        (
+                            "extent_probability",
+                            "Ice-extent probability or class (≥15%)",
+                        ),
+                    ],
+                    "Extent predictions are scored against observed concentration converted to extent (at least 15% = ice).",
+                ),
+                class_name="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2",
             ),
             rx.el.fieldset(
                 rx.el.legend(

@@ -80,32 +80,50 @@ class SupportedMappingTests(unittest.TestCase):
 
     def test_unsupported_columns_or_missing_coordinates_remain_inactive(self):
         dates = {"fixed_year": "2023", "fixed_month": "9"}
+        defaults = {"value_scale": "auto", "prediction_type": "concentration"}
         for columns in (
             ["Latitude", "Longitude", "v_wind"],
-            [
-                "Longitude",
-                "Latitude",
-                "Prob_1_previous_year",
-                "Prob_Not_1_previous_year",
-                "Post_Prob_1",
-                "Post_Prob_Not_1",
-                "Post_Pred_class",
-            ],
-            [
-                "Longitude",
-                "Latitude",
-                "Sea_1_extent",
-                "Prob_1",
-                "Prob_Not_1",
-                "Pred_class",
-            ],
             ["Latitude", "wind_speed"],
         ):
             with self.subTest(columns=columns):
                 mapping, active = suggested_mapping(columns, 347040, dates)
                 self.assertFalse(active)
-                self.assertEqual(mapping, dates)
+                self.assertEqual(mapping, dates | defaults)
                 self.assertIsNot(mapping, dates)
+
+    def test_bundled_prediction_files_map_probability_but_stay_inactive(self):
+        dates = {"fixed_year": "2023", "fixed_month": "9"}
+        for columns, expected in (
+            (
+                [
+                    "Longitude",
+                    "Latitude",
+                    "Prob_1_previous_year",
+                    "Prob_Not_1_previous_year",
+                    "Post_Prob_1",
+                    "Post_Prob_Not_1",
+                    "Post_Pred_class",
+                ],
+                "Post_Prob_1",
+            ),
+            (
+                [
+                    "Longitude",
+                    "Latitude",
+                    "Sea_1_extent",
+                    "Prob_1",
+                    "Prob_Not_1",
+                    "Pred_class",
+                ],
+                "Prob_1",
+            ),
+        ):
+            with self.subTest(columns=columns):
+                mapping, active = suggested_mapping(columns, 82120, dates)
+                self.assertFalse(active)
+                self.assertEqual(mapping["prediction"], expected)
+                self.assertEqual(mapping["prediction_type"], "extent_probability")
+                self.assertEqual(mapping["sea_ice_concentration"], "")
 
 
 class RestorationTests(unittest.TestCase):
@@ -180,7 +198,7 @@ class RestorationTests(unittest.TestCase):
         self.assertEqual(len(self.batch_calls()), 3)
         self.session.add.assert_called_once()
 
-    def test_unsupported_raw_columns_are_saved_unchanged_with_date_only(self):
+    def test_prediction_raw_columns_are_saved_unchanged_and_inactive(self):
         self.path = self.path.with_name("202309_all_pred_posterior_seed_52.csv")
         self.path.write_bytes(
             b"Longitude,Latitude,Sea_1_extent,Prob_1,Pred_class\n-42,-39,001,0.014910913,01\n"
@@ -192,10 +210,10 @@ class RestorationTests(unittest.TestCase):
             json.loads(dataset.column_names_json),
             ["Longitude", "Latitude", "Sea_1_extent", "Prob_1", "Pred_class"],
         )
-        self.assertEqual(
-            json.loads(dataset.map_mapping_json),
-            {"fixed_year": "2023", "fixed_month": "9"},
-        )
+        mapping = json.loads(dataset.map_mapping_json)
+        self.assertEqual(mapping["fixed_year"], "2023")
+        self.assertEqual(mapping["prediction"], "Prob_1")
+        self.assertEqual(mapping["prediction_type"], "extent_probability")
         record = self.batch_calls()[0].args[1][0]
         self.assertEqual(
             json.loads(record["cell_values_json"]),

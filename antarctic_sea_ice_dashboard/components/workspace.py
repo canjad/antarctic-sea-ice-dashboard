@@ -1157,11 +1157,6 @@ def data_card(name: str, icon: str, description: str) -> rx.Component:
             action(
                 "View metadata", "file-text", S.dataset_action(name, "metadata")
             ),
-            action(
-                "Replace dataset",
-                "refresh-cw",
-                S.dataset_action(name, "replace"),
-            ),
             class_name="flex flex-wrap gap-2 mt-5",
         ),
         class_name="rounded-lg border border-slate-200 p-5 bg-white",
