@@ -28,6 +28,7 @@ class RestoreResult(TypedDict):
     dataset_id: int
     inserted_rows: int
     active: bool
+    prediction: bool
 
 
 def infer_snapshot(path: Path) -> dict[str, str]:
@@ -43,13 +44,15 @@ def infer_snapshot(path: Path) -> dict[str, str]:
 def suggested_mapping(
     columns: list[str], row_count: int, dates: dict[str, str]
 ) -> tuple[dict[str, str], bool]:
-    suggested = UploadedData._suggest_mapping(columns) | dates
+    columns_mapping = UploadedData._suggest_mapping(columns)
+    options = UploadedData._suggest_options(columns_mapping["prediction"])
+    suggested = columns_mapping | dates | options
     try:
-        return UploadedData._validate_mapping(
-            columns, row_count, suggested
-        ), True
+        clean = UploadedData._validate_mapping(columns, row_count, suggested)
     except ValueError:
-        return dates.copy(), False
+        return dates | options, False
+    # Prediction datasets are reserved for Model Insights, never globe layers.
+    return clean, not clean.get("prediction")
 
 
 def restore_file(path: Path) -> RestoreResult:
@@ -77,6 +80,7 @@ def restore_file(path: Path) -> RestoreResult:
                         "dataset_id": existing.id,
                         "inserted_rows": 0,
                         "active": existing.map_layer_active,
+                        "prediction": False,
                     }
                 dates = infer_snapshot(path)
                 with path.open("rb") as file:
@@ -121,6 +125,7 @@ def restore_file(path: Path) -> RestoreResult:
                     "dataset_id": dataset_id,
                     "inserted_rows": len(records),
                     "active": active,
+                    "prediction": bool(mapping.get("prediction")),
                 }
         return result
     except Exception as e:
@@ -155,7 +160,11 @@ def main() -> int:
             layer = (
                 "active supported layer"
                 if result["active"]
-                else "inactive; date metadata only"
+                else (
+                    "prediction mapped for Model Insights"
+                    if result.get("prediction")
+                    else "inactive; date metadata only"
+                )
             )
             print(
                 f"INSERT {path.name}: {result['inserted_rows']:,} rows; {layer}."
