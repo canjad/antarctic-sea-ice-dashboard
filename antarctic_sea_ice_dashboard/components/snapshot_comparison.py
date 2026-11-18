@@ -71,20 +71,68 @@ def comparison_card(
     )
 
 
+def _change_words(kind: str) -> rx.Var:
+    """Plain-language word for a decrease ("down") or increase ("up")."""
+    words = {
+        "sea_ice_concentration": ("Less sea ice", "More sea ice"),
+        "sea_surface_temperature": ("Cooler", "Warmer"),
+        "air_temperature": ("Cooler", "Warmer"),
+        "wind_speed": ("Weaker wind", "Stronger wind"),
+    }
+    index = 0 if kind == "down" else 1
+    return rx.match(
+        Compare.measurement_key,
+        *[(key, pair[index]) for key, pair in words.items()],
+        "Decrease" if kind == "down" else "Increase",
+    )
+
+
+def _legend_swatch(color: str, label: rx.Var | str) -> rx.Component:
+    return rx.el.span(
+        rx.el.span(class_name=f"h-2.5 w-2.5 shrink-0 rounded-sm {color}"),
+        label,
+        class_name="flex items-center gap-1.5",
+    )
+
+
 def difference_globe() -> rx.Component:
     return rx.el.section(
         rx.el.div(
             rx.el.div(
                 rx.icon("globe", class_name="h-4 w-4 text-[#286180]"),
                 rx.el.h2(
-                    "Spatial difference on the south-polar globe",
+                    "Where did ",
+                    rx.el.span(
+                        Compare.measurement_label.lower(),
+                        class_name="text-[#286180]",
+                    ),
+                    " change from ",
+                    Compare.period_a,
+                    " to ",
+                    Compare.period_b,
+                    "?",
                     class_name="text-sm font-semibold text-slate-800",
                 ),
                 class_name="flex items-center gap-2",
             ),
             rx.el.p(
-                "Each marker compares the mean value in a geographic cell. Blue indicates a decrease, red an increase, and neutral grey is near zero.",
+                "Each coloured patch is one small area of ocean. Its colour shows how much the ",
+                Compare.measurement_label.lower(),
+                " there went up or down between the two months.",
                 class_name="mt-1 text-[11px] leading-relaxed text-slate-600",
+            ),
+            rx.el.div(
+                _legend_swatch("bg-[#be3830]", _change_words("up")),
+                _legend_swatch("bg-[#26699a]", _change_words("down")),
+                _legend_swatch(
+                    "border border-slate-300 bg-[#f2f4f6]",
+                    "Little or no change",
+                ),
+                rx.el.span(
+                    "Click a patch to see both values.",
+                    class_name="text-slate-500",
+                ),
+                class_name="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-medium text-slate-700",
             ),
             class_name="border-b border-slate-200 bg-white p-4",
         ),
@@ -105,24 +153,49 @@ def difference_globe() -> rx.Component:
                     class_name="h-[420px] w-full bg-[#dbe8ed] sm:h-[520px]",
                 ),
                 rx.el.div(
-                    rx.el.span(
-                        "−",
-                        Compare.globe_max_abs,
-                        " ",
-                        Compare.measurement_units,
-                        class_name="text-[10px] font-medium text-slate-600",
+                    rx.el.div(
+                        rx.el.span(
+                            "≤ −",
+                            Compare.globe_scale_abs,
+                            " ",
+                            Compare.measurement_units,
+                            class_name="text-[10px] font-medium text-slate-600",
+                        ),
+                        rx.el.div(
+                            class_name="h-3 flex-1 rounded-full bg-[linear-gradient(90deg,#26699a_0%,#f2f4f6_50%,#be3830_100%)]",
+                        ),
+                        rx.el.span(
+                            "≥ +",
+                            Compare.globe_scale_abs,
+                            " ",
+                            Compare.measurement_units,
+                            class_name="text-[10px] font-medium text-slate-600",
+                        ),
+                        class_name="flex items-center gap-3",
                     ),
                     rx.el.div(
-                        class_name="h-3 flex-1 rounded-full bg-[linear-gradient(90deg,#26699a_0%,#f2f4f6_50%,#be3830_100%)]",
+                        rx.el.span(_change_words("down")),
+                        rx.el.span("No change"),
+                        rx.el.span(_change_words("up")),
+                        class_name="mt-1 flex justify-between px-12 text-[10px] font-medium text-slate-500",
                     ),
-                    rx.el.span(
-                        "+",
+                    rx.el.p(
+                        "Change = ",
+                        Compare.period_b,
+                        " minus ",
+                        Compare.period_a,
+                        ". Colours reach full strength at ±",
+                        Compare.globe_scale_abs,
+                        " ",
+                        Compare.measurement_units,
+                        " (95 % of changes are smaller); the largest change is ±",
                         Compare.globe_max_abs,
                         " ",
                         Compare.measurement_units,
-                        class_name="text-[10px] font-medium text-slate-600",
+                        ".",
+                        class_name="mt-2 text-[10px] leading-relaxed text-slate-500",
                     ),
-                    class_name="flex items-center gap-3 border-t border-slate-200 bg-white px-4 py-3",
+                    class_name="border-t border-slate-200 bg-white px-4 py-3",
                 ),
                 class_name="overflow-hidden rounded-b-lg border border-t-0 border-slate-200",
             ),
