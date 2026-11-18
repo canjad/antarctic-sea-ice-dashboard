@@ -33,18 +33,6 @@ app = rx.App(
             src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js",
             defer=True,
         ),
-        rx.el.script(
-            src="https://unpkg.com/@deck.gl/core@9.1.14/dist.min.js",
-            defer=True,
-        ),
-        rx.el.script(
-            src="https://unpkg.com/@deck.gl/layers@9.1.14/dist.min.js",
-            defer=True,
-        ),
-        rx.el.script(
-            src="https://unpkg.com/@deck.gl/mapbox@9.1.14/dist.min.js",
-            defer=True,
-        ),
         rx.el.script(src="/antarctic_globe.js", defer=True),
     ],
 )

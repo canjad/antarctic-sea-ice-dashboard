@@ -6,7 +6,7 @@ between months, and checking prediction output against recorded sea ice
 concentration.
 
 Built with [Reflex](https://reflex.dev) (Python full-stack web framework),
-MapLibre GL + deck.gl for the globe, and PostgreSQL for storage.
+MapLibre GL for the globe, and PostgreSQL for storage.
 
 > Prototype for research and teaching. Colours show uploaded CSV observations;
 > they are not validated science.
@@ -31,7 +31,7 @@ Thirteen sample CSVs (NSIDC 25 km polar grid, 2004–2023) are bundled in
 
 - **Python 3.13**, **Reflex 0.10.0** (backend + generated React frontend)
 - **PostgreSQL** (default) via SQLAlchemy / SQLModel and `psycopg`; Alembic migrations in [`db_migrations/`](db_migrations/)
-- **MapLibre GL 5** globe projection + **deck.gl 9** scatterplot layer ([`assets/antarctic_globe.js`](assets/antarctic_globe.js))
+- **MapLibre GL 5** globe projection; observations are blended in the browser into one smooth colour surface drawn beneath the map labels ([`assets/antarctic_globe.js`](assets/antarctic_globe.js))
 - Tailwind CSS v4 (Reflex plugin)
 
 ---
