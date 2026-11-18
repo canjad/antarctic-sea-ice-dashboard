@@ -135,7 +135,7 @@ def globe_map() -> rx.Component:
             class_name="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white p-4",
         ),
         rx.el.p(
-            "Choose a Year/Month snapshot and enable one or more uploaded CSV layers from that group. Their valid observations are drawn together in one batched WebGL layer; missing or invalid values are omitted. Click a point to inspect its CSV, column, value, and coordinates. This is a geographic observation view, not an ice-thickness or terrain model.",
+            "Choose a Year/Month snapshot and enable one or more uploaded CSV layers from that group. Their valid observations are blended into one smooth colour surface; missing or invalid values are omitted. Click anywhere on the colours to inspect the nearest observation's its CSV, column, value, and coordinates. This is a geographic observation view, not an ice-thickness or terrain model.",
             class_name="border-b border-slate-200 bg-[#f4f8fa] px-4 py-3 text-[11px] leading-relaxed text-slate-600",
         ),
         rx.cond(
@@ -220,7 +220,7 @@ def globe_map() -> rx.Component:
                 data_globe_snapshot=Globe.snapshot_label,
                 data_globe_measurement=Globe.measurement_label,
                 role="application",
-                aria_label="Interactive south-polar globe showing uploaded CSV observations, coloured by the selected measurement. Click a point for its observation details.",
+                aria_label="Interactive south-polar globe showing uploaded CSV observations, coloured by the selected measurement. Click the colours for the nearest observation's details.",
                 class_name="h-[480px] w-full bg-[#dbe8ed] sm:h-[600px]",
             ),
             rx.el.div(
@@ -244,7 +244,7 @@ def globe_map() -> rx.Component:
                     class_name="text-xs font-medium text-[#183d54]",
                 ),
                 rx.el.p(
-                    f"Mapped CSV columns: {Globe.measurement_column} · {Globe.measurement_units} · one batched WebGL layer · refreshed {Globe.updated}",
+                    f"Mapped CSV columns: {Globe.measurement_column} · {Globe.measurement_units} · smoothed surface · refreshed {Globe.updated}",
                     class_name="mt-2 break-words text-[10px] text-slate-600",
                 ),
                 rx.el.p(

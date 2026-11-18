@@ -116,7 +116,7 @@ def difference_globe() -> rx.Component:
                 class_name="flex items-center gap-2",
             ),
             rx.el.p(
-                "Each coloured patch is one small area of ocean. Its colour shows how much the ",
+                "The colours show how much the ",
                 Compare.measurement_label.lower(),
                 " there went up or down between the two months.",
                 class_name="mt-1 text-[11px] leading-relaxed text-slate-600",
@@ -129,7 +129,7 @@ def difference_globe() -> rx.Component:
                     "Little or no change",
                 ),
                 rx.el.span(
-                    "Click a patch to see both values.",
+                    "Click anywhere on the colours to see both values.",
                     class_name="text-slate-500",
                 ),
                 class_name="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-medium text-slate-700",

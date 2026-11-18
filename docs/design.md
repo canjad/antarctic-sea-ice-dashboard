@@ -158,8 +158,7 @@ are pinned in the application entry point.
 | Psycopg | PostgreSQL driver | [Psycopg documentation](https://www.psycopg.org/) |
 | Pillow | Legacy raster creation and image handling | [Pillow documentation](https://python-pillow.org/) |
 | Faker | Demo-only synthetic content | [Faker documentation](https://faker.readthedocs.io/) |
-| MapLibre GL JS 5.6.1 | Browser map and globe projection | [MapLibre GL JS documentation](https://maplibre.org/maplibre-gl-js/docs/) |
-| Deck.gl 9.1.14 | WebGL observation and difference layers | [Deck.gl documentation](https://deck.gl/docs) |
+| MapLibre GL JS 5.6.1 | Browser map, globe projection, and the smoothed observation/difference surface (image source drawn beneath labels) | [MapLibre GL JS documentation](https://maplibre.org/maplibre-gl-js/docs/) |
 | OpenFreeMap Liberty style | External coastline basemap style | [OpenFreeMap](https://openfreemap.org/) |
 | Google Fonts: Inter, IBM Plex Sans | Workspace typography | [Google Fonts](https://fonts.google.com/) |
 
