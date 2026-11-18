@@ -3,13 +3,18 @@
 import asyncio
 import json
 import logging
-import math
-import re
 from typing import TypedDict
 
 import reflex as rx
 from sqlalchemy import select
 
+from antarctic_sea_ice_dashboard.cleaning import (
+    EXTENT_THRESHOLD,
+    in_physical_range,
+    parse_coordinates,
+    parse_number,
+    percent_factor,
+)
 from antarctic_sea_ice_dashboard.models import (
     UploadedDataset,
     UploadedDatasetRow,
@@ -55,17 +60,7 @@ class PredictionInsights(rx.State):
 
     @staticmethod
     def _number(value: str) -> float | None:
-        raw = value.strip().replace(",", "")
-        if not re.fullmatch(
-            r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?",
-            raw,
-        ):
-            return None
-        try:
-            number = float(raw)
-        except (ValueError, OverflowError):
-            return None
-        return number if math.isfinite(number) else None
+        return parse_number(value)
 
     @staticmethod
     def _spatial_totals(
@@ -81,8 +76,7 @@ class PredictionInsights(rx.State):
         indices = {
             field: columns.index(mapping[field]) for field in required
         }
-        totals: dict[tuple[float, float], tuple[float, int]] = {}
-        maximum = 0.0
+        located: list[tuple[tuple[float, float], float]] = []
         rows = session.execute(
             select(UploadedDatasetRow.cell_values_json)
             .where(UploadedDatasetRow.dataset_id == dataset.id)
@@ -108,38 +102,41 @@ class PredictionInsights(rx.State):
                 or not all(isinstance(cell, str) for cell in cells)
             ):
                 continue
-            latitude = PredictionInsights._number(cells[indices["latitude"]])
-            longitude = PredictionInsights._number(
-                cells[indices["longitude"]]
+            coordinates = parse_coordinates(
+                cells[indices["latitude"]], cells[indices["longitude"]]
             )
-            value = PredictionInsights._number(
-                cells[indices[measurement_key]]
-            )
-            if (
-                latitude is None
-                or longitude is None
-                or value is None
-                or not -90 <= latitude <= 90
-                or not -180 <= longitude <= 180
-                or not 0 <= value <= 100
-            ):
+            value = parse_number(cells[indices[measurement_key]])
+            if coordinates is None or value is None:
                 continue
-            longitude = (longitude + 180) % 360 - 180
-            coordinate = (round(latitude, 5), round(longitude, 5))
+            latitude, longitude = coordinates
+            located.append(
+                ((round(latitude, 5), round(longitude, 5)), value)
+            )
+        scale = percent_factor(
+            (value for _, value in located),
+            mapping.get("value_scale", "auto"),
+        )
+        totals: dict[tuple[float, float], tuple[float, int]] = {}
+        for coordinate, value in located:
+            value *= scale
+            if not in_physical_range(measurement_key, value):
+                continue
             total, count = totals.get(coordinate, (0.0, 0))
             totals[coordinate] = (total + value, count + 1)
-            maximum = max(maximum, value)
-        scale = 100.0 if totals and maximum <= 1 else 1.0
-        return {
-            coordinate: (total * scale, count)
-            for coordinate, (total, count) in totals.items()
-        }
+        return totals
 
     @staticmethod
     def _score(
         prediction_totals: dict[tuple[float, float], tuple[float, int]],
         observation_totals: dict[tuple[float, float], tuple[float, int]],
+        extent: bool = False,
     ) -> tuple[float | None, int]:
+        """Return 100 minus mean absolute error and the matched point count.
+
+        With ``extent`` the prediction is an ice-extent probability or class
+        (0–100 after scaling), so each observation becomes 100 when its
+        concentration reaches the 15% extent threshold and 0 otherwise.
+        """
         matches = prediction_totals.keys() & observation_totals.keys()
         if not matches:
             return None, 0
@@ -149,6 +146,10 @@ class PredictionInsights(rx.State):
             observation_total, observation_count = observation_totals[coordinate]
             prediction_value = prediction_total / prediction_count
             observation_value = observation_total / observation_count
+            if extent:
+                observation_value = (
+                    100.0 if observation_value >= EXTENT_THRESHOLD else 0.0
+                )
             errors.append(abs(prediction_value - observation_value))
         return max(0.0, 100.0 - sum(errors) / len(errors)), len(matches)
 
@@ -168,7 +169,9 @@ class PredictionInsights(rx.State):
             ] = []
             options: list[PredictionOption] = []
             for dataset in datasets:
-                summary = UploadedData._dataset_summary(dataset)
+                summary = UploadedData._safe_summary(dataset)
+                if not (summary["map_ready"] or summary["model_ready"]):
+                    continue
                 mapping = json.loads(dataset.map_mapping_json)
                 columns = json.loads(dataset.column_names_json)
                 catalogue.append((dataset, mapping, columns, summary))
@@ -250,8 +253,12 @@ class PredictionInsights(rx.State):
                         previous_count + count,
                     )
             result["observation_files"] = observation_files
+            extent = (
+                prediction_mapping.get("prediction_type", "concentration")
+                == "extent_probability"
+            )
             accuracy, matched_points = PredictionInsights._score(
-                prediction_totals, observation_totals
+                prediction_totals, observation_totals, extent
             )
             result["matched_points"] = matched_points
             if accuracy is None:
@@ -263,7 +270,9 @@ class PredictionInsights(rx.State):
                 return result
             result["accuracy"] = f"{accuracy:.1f}%"
             result["message"] = (
-                "Accuracy is 100% minus mean absolute error in concentration percentage points across matched geographic observations. Fraction-form concentrations (0–1) are converted to percent."
+                "Prediction is an ice-extent probability or class. Each recorded concentration is converted to extent (100 when at least 15%, otherwise 0); accuracy is 100% minus the mean absolute difference across matched locations."
+                if extent
+                else "Accuracy is 100% minus mean absolute error in concentration percentage points across matched geographic observations. Fraction-form values (0–1) are converted to percent."
             )
             return result
 

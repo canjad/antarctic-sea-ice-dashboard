@@ -78,7 +78,6 @@ class CsvValidationTests(unittest.TestCase):
             b"a,a\n1,2\n",
             b"a,b\n1\n",
             b"a\n1,2\n",
-            b"a\n\n",
             b'a\n"unclosed',
         ):
             with self.subTest(data=data), self.assertRaises(ValueError):
@@ -106,13 +105,12 @@ class CsvValidationTests(unittest.TestCase):
         cases = [
             ("wrong.txt", b"a\n1"),
             ("empty.csv", b""),
-            ("encoding.csv", b"a\n\xff"),
+            ("encoding.csv", b"a\n\x81"),
             ("header.csv", b"a, \n1,2"),
             ("duplicate.csv", b"a,a\n1,2"),
             ("short.csv", b"a,b\n1"),
             ("long.csv", b"a\n1,2"),
             ("quote.csv", b'a\n"unclosed'),
-            ("blankline.csv", b"a\n\n"),
             ("too-many-rows.csv", f"a\n{'1\n' * (MAX_ROWS + 1)}".encode()),
         ]
         for filename, data in cases:

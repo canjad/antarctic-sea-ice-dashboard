@@ -34,30 +34,36 @@ def import_zone() -> rx.Component:
             rx.el.label(
                 "Year",
                 rx.el.input(
-                    type="number",
-                    min=1,
-                    max=9999,
-                    step=1,
+                    type="text",
+                    input_mode="numeric",
+                    pattern="[0-9]*",
+                    max_length=4,
                     required=True,
                     on_change=D.set_upload_year,
                     disabled=D.importing,
                     class_name=INPUT,
                     default_value=D.upload_year,
+                    # Uncontrolled so fast typing is never overwritten by a
+                    # server echo; a new key clears it after each import.
+                    key=D.upload_revision.to_string() + "-year",
                 ),
                 class_name="grid gap-1 text-[11px] font-medium text-slate-600",
             ),
             rx.el.label(
                 "Month",
                 rx.el.input(
-                    type="number",
-                    min=1,
-                    max=12,
-                    step=1,
+                    type="text",
+                    input_mode="numeric",
+                    pattern="[0-9]*",
+                    max_length=2,
                     required=True,
                     on_change=D.set_upload_month,
                     disabled=D.importing,
                     class_name=INPUT,
                     default_value=D.upload_month,
+                    # Uncontrolled so fast typing is never overwritten by a
+                    # server echo; a new key clears it after each import.
+                    key=D.upload_revision.to_string() + "-month",
                 ),
                 class_name="grid gap-1 text-[11px] font-medium text-slate-600",
             ),
@@ -126,7 +132,7 @@ def import_zone() -> rx.Component:
             class_name="mt-3 flex flex-wrap gap-2",
         ),
         rx.el.p(
-            "Up to 400,000 rows and 10 columns per CSV; the 20 MB per-file limit still applies. Unique nonempty headers; equal field counts. Header-only CSVs are supported. Values remain strings, including dates, formulas and leading zeros.",
+            "Up to 400,000 rows and 10 columns per CSV; the 20 MB per-file limit still applies. Unique nonempty headers; equal field counts. Blank rows and empty unnamed trailing columns are skipped. UTF-8 is preferred; GBK/GB18030 and Windows-1252 files are also accepted. Header-only CSVs are supported. Values remain strings, including dates, formulas and leading zeros.",
             class_name="mt-3 text-[10px] leading-relaxed text-slate-500",
         ),
         rx.el.p(
@@ -426,7 +432,7 @@ def row_editor() -> rx.Component:
                     class_name="text-sm font-semibold text-[#172e40]",
                 ),
                 rx.el.p(
-                    "Blank values are allowed. Save commits this row to the shared workspace. Unsaved drafts are discarded when you change dataset, page or row, or refresh.",
+                    "Blank values are allowed. Mapped coordinate and measurement columns must hold numbers in a plausible range. Save commits this row to the shared workspace. Unsaved drafts are discarded when you change dataset, page or row, or refresh.",
                     class_name="mt-1 text-[11px] leading-relaxed text-slate-500",
                 ),
                 rx.el.form(

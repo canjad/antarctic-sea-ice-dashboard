@@ -10,6 +10,13 @@ from uuid import uuid4
 import reflex as rx
 from sqlalchemy import select
 
+from antarctic_sea_ice_dashboard.cleaning import (
+    PERCENT_FIELDS,
+    in_physical_range,
+    parse_coordinates,
+    parse_number,
+    percent_factor,
+)
 from antarctic_sea_ice_dashboard.models import (
     UploadedDataset,
     UploadedDatasetRow,
@@ -115,7 +122,6 @@ class SnapshotComparison(rx.State):
                 "longitude": columns.index(mapping["longitude"]),
                 "measurement": columns.index(column),
             }
-            raw_values: list[float] = []
             located_values: list[tuple[int, int, float]] = []
             rows = session.execute(
                 select(UploadedDatasetRow.cell_values_json)
@@ -135,40 +141,35 @@ class SnapshotComparison(rx.State):
                 cells = AntarcticGlobe._cells(raw, len(columns))
                 if cells is None:
                     continue
-                latitude = AntarcticGlobe._number(cells[indices["latitude"]])
-                longitude = AntarcticGlobe._number(cells[indices["longitude"]])
-                if (
-                    latitude is None
-                    or longitude is None
-                    or not -90 <= latitude <= 90
-                    or not -180 <= longitude <= 180
-                ):
+                coordinates = parse_coordinates(
+                    cells[indices["latitude"]], cells[indices["longitude"]]
+                )
+                if coordinates is None:
                     continue
-                value = AntarcticGlobe._number(cells[indices["measurement"]])
-                if value is None or (
-                    measurement_key == "sea_ice_concentration"
-                    and not 0 <= value <= 100
-                ):
+                latitude, longitude = coordinates
+                value = parse_number(cells[indices["measurement"]])
+                if value is None:
                     continue
-                raw_values.append(value)
                 latitude_bin = min(359, int((latitude + 90) / 0.5))
                 normalized_longitude = (longitude + 180) % 360
                 longitude_bin = min(359, int(normalized_longitude))
                 located_values.append((latitude_bin, longitude_bin, value))
-            fraction = (
-                measurement_key == "sea_ice_concentration"
-                and bool(raw_values)
-                and max(raw_values) <= 1
+            factor = (
+                percent_factor(
+                    (item[2] for item in located_values),
+                    mapping.get("value_scale", "auto"),
+                )
+                if measurement_key in PERCENT_FIELDS
+                else 1.0
             )
             for latitude_bin, longitude_bin, value in located_values:
-                normalized_value = value * 100 if fraction else value
+                normalized_value = value * factor
+                if not in_physical_range(measurement_key, normalized_value):
+                    continue
                 binned_values.setdefault(
                     (latitude_bin, longitude_bin), []
                 ).append(normalized_value)
-            if measurement_key == "sea_ice_concentration" and fraction:
-                values.extend(value * 100 for value in raw_values)
-            else:
-                values.extend(raw_values)
+                values.append(normalized_value)
         mean = sum(values) / len(values) if values else None
         return mean, len(values), file_count, binned_values
 
@@ -189,7 +190,7 @@ class SnapshotComparison(rx.State):
             ).all()
             catalog: list[tuple[DatasetSummary, dict[str, str], list[str]]] = []
             for dataset in datasets:
-                summary = UploadedData._dataset_summary(dataset)
+                summary = UploadedData._safe_summary(dataset)
                 if not summary["map_ready"]:
                     continue
                 catalog.append(

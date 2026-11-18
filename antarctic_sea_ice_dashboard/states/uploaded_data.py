@@ -12,6 +12,15 @@ from pathlib import PurePath
 from typing import Any, TypedDict
 
 from sqlalchemy import delete, func, insert, select, text
+from antarctic_sea_ice_dashboard.cleaning import (
+    PERCENT_FIELDS,
+    PHYSICAL_RANGES,
+    PREDICTION_TYPE_CHOICES,
+    VALUE_SCALE_CHOICES,
+    is_missing,
+    parse_coordinates,
+    parse_number,
+)
 from antarctic_sea_ice_dashboard.models import (
     UploadedDataset,
     UploadedDatasetRow,
@@ -30,8 +39,16 @@ MAPPING_LABELS: dict[str, str] = {
     "sea_surface_temperature": "Sea-surface temperature (°C)",
     "wind_speed": "Wind speed (m/s)",
     "air_temperature": "Air temperature (°C)",
-    "prediction": "Prediction · sea-ice concentration (%)",
+    "prediction": "Prediction · sea-ice concentration (%) or extent probability",
 }
+# Non-column mapping settings and their defaults.
+MAPPING_OPTIONS: dict[str, tuple[tuple[str, ...], str]] = {
+    "value_scale": (VALUE_SCALE_CHOICES, "auto"),
+    "prediction_type": (PREDICTION_TYPE_CHOICES, "concentration"),
+}
+# Encodings tried in order. GB18030 covers GBK/GB2312 exports from Chinese
+# Excel; Windows-1252 covers Western European Excel exports.
+FALLBACK_ENCODINGS = ("utf-8-sig", "gb18030", "cp1252")
 
 
 class MappingField(TypedDict):
@@ -83,6 +100,7 @@ class UploadedData(rx.State):
     importing: bool = False
     upload_year: str = ""
     upload_month: str = ""
+    upload_revision: int = 0
     error: str = ""
     success: str = ""
     editor_mode: str = ""
@@ -102,6 +120,8 @@ class UploadedData(rx.State):
     source_success: str = ""
     source_saving: bool = False
     mapping_revision: int = 0
+    value_scale: str = "auto"
+    prediction_type: str = "concentration"
 
     @rx.var
     def page_count(self) -> int:
@@ -153,19 +173,54 @@ class UploadedData(rx.State):
                 "sicprediction",
                 "modelprediction",
                 "modeloutput",
+                "postprob1",
+                "prob1",
+                "probability",
+                "probice",
+                "postpredclass",
+                "predclass",
             ],
         }
         normalized = [
             (re.sub(r"[^a-z0-9]", "", column.casefold()), column)
             for column in columns
         ]
+        # Earlier aliases win, so a probability column is preferred over a
+        # 0/1 class column when a file has both.
         return {
             field: next(
-                (column for key, column in normalized if key in aliases[field]),
+                (
+                    column
+                    for alias in aliases[field]
+                    for key, column in normalized
+                    if key == alias
+                ),
                 "",
             )
             for field in MAPPING_LABELS
         }
+
+    @staticmethod
+    def _suggest_options(prediction_column: str) -> dict[str, str]:
+        """Guess the prediction type from the prediction column's header."""
+        key = re.sub(r"[^a-z0-9]", "", prediction_column.casefold())
+        extent = any(word in key for word in ("prob", "class", "extent"))
+        return {
+            "value_scale": "auto",
+            "prediction_type": "extent_probability" if extent else "concentration",
+        }
+
+    @staticmethod
+    def _clean_options(mapping: dict[str, str]) -> dict[str, str]:
+        clean: dict[str, str] = {}
+        for key, (choices, default) in MAPPING_OPTIONS.items():
+            value = mapping.get(key, "") or default
+            if value not in choices:
+                raise ValueError(
+                    f"Choose a supported value for {key.replace('_', ' ')}. No changes were saved."
+                )
+            clean[key] = value
+        return clean
 
     @staticmethod
     def _duplicate_mapping_error(mapping: dict[str, str]) -> str:
@@ -241,29 +296,52 @@ class UploadedData(rx.State):
         if duplicate_error:
             raise ValueError(duplicate_error)
         clean.update(fixed)
+        clean.update(UploadedData._clean_options(mapping))
         return clean
 
     @staticmethod
+    def _decode(data: bytes) -> tuple[str, str]:
+        """Decode CSV bytes, returning the text and the encoding used."""
+        if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+            try:
+                return data.decode("utf-16"), "UTF-16"
+            except UnicodeDecodeError:
+                pass
+        for encoding in FALLBACK_ENCODINGS:
+            try:
+                return data.decode(encoding), encoding
+            except UnicodeDecodeError:
+                continue
+        raise ValueError(
+            "This file could not be decoded. Save it as CSV UTF-8 and retry."
+        )
+
+    @staticmethod
     def _parse_csv(
-        filename: str, data: bytes
+        filename: str, data: bytes, report: dict[str, Any] | None = None
     ) -> tuple[list[str], list[list[str]]]:
-        """Decode and validate a CSV against the workspace's import limits."""
+        """Decode and validate a CSV against the workspace's import limits.
+
+        Fully blank rows (including Excel's ",,," rows) are skipped, and
+        trailing header-less columns that hold no data are dropped. Counts are
+        written to ``report`` when one is given.
+        """
         if PurePath(filename).suffix.lower() != ".csv":
             raise ValueError("Choose a file with a .csv extension.")
         if len(data) > MAX_BYTES:
             raise ValueError("This CSV exceeds the 20 MB per-file limit.")
         if not data:
             raise ValueError("The file is empty. Include a header row.")
-        try:
-            text = data.decode("utf-8-sig")
-        except UnicodeDecodeError as e:
-            logging.exception(f"Error: {type(e).__name__}")
-            raise ValueError(
-                "Use UTF-8 or UTF-8 with BOM encoding; this file could not be decoded."
-            ) from e
+        text, encoding = UploadedData._decode(data)
         reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+        skipped_blank = 0
         try:
-            headers = next(reader, [])
+            raw_headers = next(reader, [])
+            width = len(raw_headers)
+            while width and not raw_headers[width - 1].strip():
+                width -= 1
+            headers = raw_headers[:width]
+            dropped_columns = len(raw_headers) - width
             if not headers or any(not name.strip() for name in headers):
                 raise ValueError(
                     "Every column needs a nonempty header in the first row."
@@ -280,23 +358,75 @@ class UploadedData(rx.State):
                 )
             records: list[list[str]] = []
             for index, cells in enumerate(reader, start=1):
-                if index > MAX_ROWS:
+                if all(not cell.strip() for cell in cells):
+                    skipped_blank += 1
+                    continue
+                if len(records) >= MAX_ROWS:
                     raise ValueError("Use at most 400,000 data rows per CSV.")
+                if len(cells) > len(headers) and len(cells) <= len(
+                    raw_headers
+                ):
+                    if any(cell.strip() for cell in cells[len(headers) :]):
+                        raise ValueError(
+                            f"Data row {index} has values in a column without a header. Add a header or remove those values."
+                        )
+                    cells = cells[: len(headers)]
                 if len(cells) != len(headers):
                     raise ValueError(
-                        f"Data row {index} has {len(cells)} fields; expected {len(headers)}. Check blank lines, commas and quoting."
+                        f"Data row {index} has {len(cells)} fields; expected {len(headers)}. Check commas and quoting."
                     )
                 if any(len(cell) > MAX_CELL for cell in cells):
                     raise ValueError(
                         f"Data row {index} contains a cell exceeding 32,768 characters."
                     )
                 records.append(cells)
+            if report is not None:
+                report["encoding"] = encoding
+                report["skipped_blank_rows"] = skipped_blank
+                report["dropped_columns"] = dropped_columns
             return headers, records
         except csv.Error as e:
             logging.exception(f"Error: {type(e).__name__}")
             raise ValueError(
                 f"Invalid CSV quoting or an oversized field near file line {reader.line_num}."
             ) from e
+
+    @staticmethod
+    def _load_json(raw: Any, expected: type, fallback: Any) -> Any:
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            return fallback
+        return value if isinstance(value, expected) else fallback
+
+    @staticmethod
+    def _safe_summary(dataset: UploadedDataset) -> DatasetSummary:
+        """Summarize a dataset; a damaged record yields a not-ready summary."""
+        try:
+            return UploadedData._dataset_summary(dataset)
+        except (TypeError, ValueError, AttributeError):
+            logging.exception(f"Could not read saved dataset {dataset.id}.")
+            columns = UploadedData._load_json(
+                dataset.column_names_json, list, []
+            )
+            created = getattr(dataset, "created_at", None)
+            return {
+                "id": dataset.id,
+                "name": dataset.name,
+                "filename": dataset.original_filename,
+                "rows": dataset.row_count,
+                "columns": len(columns),
+                "created": created.strftime("%d %b %Y · %H:%M UTC")
+                if created
+                else "",
+                "active": False,
+                "map_ready": False,
+                "snapshot": "Undated",
+                "group_key": "undated",
+                "map_message": "The saved mapping for this dataset is damaged. Select it and save the mapping again.",
+                "model_ready": False,
+                "is_prediction": False,
+            }
 
     @staticmethod
     def _dataset_summary(dataset: UploadedDataset) -> DatasetSummary:
@@ -380,6 +510,8 @@ class UploadedData(rx.State):
         self.mapping_fields = []
         self.fixed_year = ""
         self.fixed_month = ""
+        self.value_scale = "auto"
+        self.prediction_type = "concentration"
         self.selected_source_active = False
         self.source_error = ""
         self.source_success = ""
@@ -394,7 +526,7 @@ class UploadedData(rx.State):
                 )
             ).all()
             catalogue = [
-                UploadedData._dataset_summary(dataset) for dataset in datasets
+                UploadedData._safe_summary(dataset) for dataset in datasets
             ]
             self.active_sources = [
                 dataset for dataset in catalogue if dataset["active"]
@@ -412,10 +544,30 @@ class UploadedData(rx.State):
                 self.selected_id = selected.id
                 self.selected_name = selected.name
                 self.original_filename = selected.original_filename
-                self.columns = json.loads(selected.column_names_json)
+                self.columns = [
+                    str(column)
+                    for column in UploadedData._load_json(
+                        selected.column_names_json, list, []
+                    )
+                ]
                 self.row_count = selected.row_count
-                saved_mapping = json.loads(selected.map_mapping_json)
+                saved_mapping = UploadedData._load_json(
+                    selected.map_mapping_json, dict, {}
+                )
                 suggested = self._suggest_mapping(self.columns)
+                suggested_options = self._suggest_options(
+                    str(saved_mapping.get("prediction", suggested["prediction"]))
+                )
+                self.value_scale = str(
+                    saved_mapping.get(
+                        "value_scale", suggested_options["value_scale"]
+                    )
+                )
+                self.prediction_type = str(
+                    saved_mapping.get(
+                        "prediction_type", suggested_options["prediction_type"]
+                    )
+                )
                 self.mapping_fields = [
                     {
                         "name": key,
@@ -445,7 +597,12 @@ class UploadedData(rx.State):
                     {
                         "id": r.id,
                         "number": self.page_index * PAGE_SIZE + i + 1,
-                        "cells": json.loads(r.cell_values_json),
+                        "cells": [
+                            str(cell)
+                            for cell in UploadedData._load_json(
+                                r.cell_values_json, list, []
+                            )
+                        ],
                     }
                     for i, r in enumerate(stored_rows)
                 ]
@@ -480,16 +637,13 @@ class UploadedData(rx.State):
         return clean["fixed_year"], clean["fixed_month"]
 
     @rx.event
-    def set_upload_year(self, value: float):
-        value = float(value)
-        self.upload_year = str(int(value)) if value.is_integer() else str(value)
+    def set_upload_year(self, value: str):
+        # Keep the raw text; it is validated as a whole number on import.
+        self.upload_year = str(value).strip()
 
     @rx.event
-    def set_upload_month(self, value: float):
-        value = float(value)
-        self.upload_month = (
-            str(int(value)) if value.is_integer() else str(value)
-        )
+    def set_upload_month(self, value: str):
+        self.upload_month = str(value).strip()
 
     @rx.event
     async def import_csv(self, files: list[rx.UploadFile]):
@@ -549,13 +703,20 @@ class UploadedData(rx.State):
     @staticmethod
     def _persist_csv(
         temporary_name: str, filename: str, year: str, month: str
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, dict[str, Any]]:
         path = rx.get_upload_dir() / temporary_name
         try:
             year, month = UploadedData._required_snapshot_dates(year, month)
+            report: dict[str, Any] = {}
             headers, records = UploadedData._parse_csv(
-                filename, path.read_bytes()
+                filename, path.read_bytes(), report
             )
+            suggested = UploadedData._suggest_mapping(headers)
+            initial_mapping: dict[str, str] = {
+                "fixed_year": year,
+                "fixed_month": month,
+                **UploadedData._suggest_options(suggested["prediction"]),
+            }
             with rx.session() as session:
                 with session.begin():
                     dataset = UploadedDataset(
@@ -568,11 +729,7 @@ class UploadedData(rx.State):
                         source="uploaded_csv",
                         status="ready",
                         map_mapping_json=json.dumps(
-                            {
-                                "fixed_year": year,
-                                "fixed_month": month,
-                            },
-                            ensure_ascii=True,
+                            initial_mapping, ensure_ascii=True
                         ),
                     )
                     session.add(dataset)
@@ -594,12 +751,33 @@ class UploadedData(rx.State):
                                 )
                             ],
                         )
-            return new_id, len(records)
+            return new_id, len(records), report
         finally:
             try:
                 path.unlink(missing_ok=True)
             except OSError as e:
                 logging.exception(f"Error: {e}")
+
+    @staticmethod
+    def _import_notes(report: dict[str, Any]) -> str:
+        notes = []
+        encoding = report.get("encoding", "utf-8-sig")
+        if encoding not in ("utf-8-sig", "utf-8"):
+            notes.append(
+                f"Decoded as {encoding.upper()}; check text columns look right"
+            )
+        if report.get("skipped_blank_rows"):
+            notes.append(
+                f"skipped {report['skipped_blank_rows']:,} blank rows"
+            )
+        if report.get("dropped_columns"):
+            notes.append(
+                f"dropped {report['dropped_columns']} empty unnamed columns"
+            )
+        if not notes:
+            return ""
+        text = "; ".join(notes)
+        return " " + text[0].upper() + text[1:] + "."
 
     @rx.event(background=True)
     async def process_csv(
@@ -607,7 +785,7 @@ class UploadedData(rx.State):
     ):
         """Persist validated CSV rows and metadata as one database operation."""
         try:
-            new_id, count = await asyncio.to_thread(
+            new_id, count, report = await asyncio.to_thread(
                 UploadedData._persist_csv,
                 temporary_name,
                 filename,
@@ -619,7 +797,12 @@ class UploadedData(rx.State):
                 self.page_index = 0
                 self.upload_year = ""
                 self.upload_month = ""
-                self.success = f"Imported {count:,} rows tagged {month}/{year}. Select and apply a map source explicitly; importing alone does not select it."
+                self.upload_revision += 1
+                self.success = (
+                    f"Imported {count:,} rows tagged {month}/{year}."
+                    + UploadedData._import_notes(report)
+                    + " Select and apply a map source explicitly; importing alone does not select it."
+                )
                 self.importing = False
             yield UploadedData.load_catalogue
             yield rx.clear_selected_files("csv_import")
@@ -701,6 +884,8 @@ class UploadedData(rx.State):
         mapping["fixed_month"] = str(
             form_data.get("fixed_month", self.fixed_month)
         )
+        for key in MAPPING_OPTIONS:
+            mapping[key] = str(form_data.get(key, getattr(self, key)))
         self.source_error = ""
         self.source_success = ""
         try:
@@ -761,6 +946,9 @@ class UploadedData(rx.State):
             {"name": key, "label": label, "value": suggested[key]}
             for key, label in MAPPING_LABELS.items()
         ]
+        options = self._suggest_options(suggested["prediction"])
+        self.value_scale = options["value_scale"]
+        self.prediction_type = options["prediction_type"]
         self.mapping_revision += 1
         self.source_error = ""
         self.source_success = (
@@ -887,6 +1075,15 @@ class UploadedData(rx.State):
                         raise ValueError(
                             "The columns changed. Refresh the catalogue before editing."
                         )
+                    problem = UploadedData._row_problem(
+                        self.columns,
+                        UploadedData._load_json(
+                            dataset.map_mapping_json, dict, {}
+                        ),
+                        cells,
+                    )
+                    if problem:
+                        raise ValueError(problem)
                     if self.editor_mode == "add":
                         if dataset.row_count >= MAX_ROWS:
                             raise ValueError(
@@ -939,6 +1136,43 @@ class UploadedData(rx.State):
         except Exception as e:
             logging.exception(f"Error: {type(e).__name__}")
             self.error = "Could not save the row. Your changes have not been saved; please retry."
+
+    @staticmethod
+    def _row_problem(
+        columns: list[str], mapping: dict[str, Any], cells: list[str]
+    ) -> str:
+        """Check edited cells in mapped columns; blanks are allowed."""
+        def cell(field: str) -> str | None:
+            column = mapping.get(field)
+            if not column or column not in columns:
+                return None
+            value = cells[columns.index(column)]
+            return None if is_missing(value) else value
+
+        suffix = " Your changes have not been saved."
+        latitude, longitude = cell("latitude"), cell("longitude")
+        for field, value in (("latitude", latitude), ("longitude", longitude)):
+            if value is not None and parse_number(value) is None:
+                return f'{mapping[field]} must be a number (use "." for decimals), or blank.{suffix}'
+        if (
+            latitude is not None
+            and longitude is not None
+            and parse_coordinates(latitude, longitude) is None
+        ):
+            return f"Latitude must be -90 to 90 and longitude -180 to 360.{suffix}"
+        for field in PHYSICAL_RANGES:
+            value = cell(field)
+            if value is None:
+                continue
+            number = parse_number(value)
+            if number is None:
+                return f'{mapping[field]} must be a number (use "." for decimals), or blank.{suffix}'
+            low, high = PHYSICAL_RANGES[field]
+            if field in PERCENT_FIELDS:
+                low, high = 0.0, 100.0
+            if not low <= number <= high:
+                return f"{mapping[field]} must be between {low:g} and {high:g}.{suffix}"
+        return ""
 
     @rx.event
     def open_rename(self):

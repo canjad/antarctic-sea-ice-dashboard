@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import math
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +12,13 @@ from uuid import uuid4
 import reflex as rx
 from sqlalchemy import select
 
+from antarctic_sea_ice_dashboard.cleaning import (
+    PERCENT_FIELDS,
+    in_physical_range,
+    parse_coordinates,
+    parse_number,
+    percent_factor,
+)
 from antarctic_sea_ice_dashboard.models import (
     UploadedDataset,
     UploadedDatasetRow,
@@ -88,12 +94,7 @@ class AntarcticGlobe(rx.State):
 
     @staticmethod
     def _number(value: str) -> float | None:
-        try:
-            number = float(value.strip().replace(",", ""))
-        except (AttributeError, ValueError):
-            logging.exception("Unexpected error")
-            return None
-        return number if math.isfinite(number) else None
+        return parse_number(value)
 
     @staticmethod
     def _cells(raw: str, column_count: int) -> list[str] | None:
@@ -253,7 +254,6 @@ class AntarcticGlobe(rx.State):
                 }
                 if is_visible_layer:
                     mapped_columns.append(measurement_column)
-                values_for_layer: list[float] = []
                 raw_points: list[tuple[float, float, float]] = []
                 rows = session.execute(
                     select(UploadedDatasetRow.cell_values_json)
@@ -279,42 +279,40 @@ class AntarcticGlobe(rx.State):
                         if is_visible_layer:
                             result["invalid_coordinates"] += 1
                         continue
-                    latitude = AntarcticGlobe._number(
-                        cells[indices["latitude"]]
+                    coordinates = parse_coordinates(
+                        cells[indices["latitude"]],
+                        cells[indices["longitude"]],
                     )
-                    longitude = AntarcticGlobe._number(
-                        cells[indices["longitude"]]
-                    )
-                    if (
-                        latitude is None
-                        or longitude is None
-                        or not -90 <= latitude <= 90
-                        or not -180 <= longitude <= 180
-                    ):
+                    if coordinates is None:
                         if is_visible_layer:
                             result["invalid_coordinates"] += 1
                         continue
-                    value = AntarcticGlobe._number(
-                        cells[indices[measurement_key]]
-                    )
-                    if value is None or (
-                        measurement_key == "sea_ice_concentration"
-                        and not 0 <= value <= 100
-                    ):
+                    latitude, longitude = coordinates
+                    value = parse_number(cells[indices[measurement_key]])
+                    if value is None:
                         if is_visible_layer:
                             result["invalid_readings"] += 1
                         continue
                     raw_points.append((longitude, latitude, value))
-                    values_for_layer.append(value)
-                fractional = (
-                    measurement_key == "sea_ice_concentration"
-                    and bool(values_for_layer)
-                    and max(values_for_layer) <= 1
+                factor = (
+                    percent_factor(
+                        (point[2] for point in raw_points),
+                        mapping.get("value_scale", "auto"),
+                    )
+                    if measurement_key in PERCENT_FIELDS
+                    else 1.0
                 )
-                converted_values = [
-                    raw_value * 100 if fractional else raw_value
-                    for _, _, raw_value in raw_points
-                ]
+                kept_points: list[tuple[float, float, float]] = []
+                converted_values: list[float] = []
+                for point in raw_points:
+                    scaled = point[2] * factor
+                    if not in_physical_range(measurement_key, scaled):
+                        if is_visible_layer:
+                            result["invalid_readings"] += 1
+                        continue
+                    kept_points.append(point)
+                    converted_values.append(scaled)
+                raw_points = kept_points
                 if converted_values:
                     layer_min = min(converted_values)
                     layer_max = max(converted_values)
