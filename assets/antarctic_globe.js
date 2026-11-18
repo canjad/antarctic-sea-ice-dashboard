@@ -2,7 +2,36 @@
   // Keep the map colors and overlays local to this runtime so multiple map
   // elements can be mounted and disposed independently.
   const activeMaps = new Map();
-  const observationAltitudeMeters = 18000;
+  // Keep observations just above the globe surface. A large altitude adds
+  // parallax that shifts points off their cells and over coastlines.
+  const observationAltitudeMeters = 1500;
+  // Source grids use 25 km cells; a radius of half a cell keeps neighbouring
+  // points from bleeding across coastlines.
+  const cellRadiusMeters = 14500;
+  // Concentrations below the conventional 15 % ice-edge threshold fade into
+  // the ocean so the ice edge does not end in a hard dark rim.
+  const iceEdgePercent = 15;
+
+  // Open water (0 % concentration) is most of the rectangular source grid.
+  // Drawing it paints a dark square over the ocean, so let the basemap's
+  // ocean show through instead.
+  const visiblePoints = (entry) => {
+    const measurement =
+      entry.element.getAttribute("data-globe-measurement") || "";
+    entry.isConcentration =
+      entry.colorMode === "measurement" && /concentration/i.test(measurement);
+    if (!entry.isConcentration) return entry.points;
+    return entry.points.filter((point) => Number(point[3]) > 0);
+  };
+
+  const measurementColor = (entry, point) => {
+    const color = colorAt(point[2]);
+    if (entry.isConcentration) {
+      const fade = Math.min(1, Number(point[3]) / iceEdgePercent);
+      color[3] = Math.round(color[3] * fade);
+    }
+    return color;
+  };
 
   // Map measurement and signed-difference values to the two legend scales.
   const colorAt = (value) => {
@@ -78,7 +107,7 @@
       entry.colorMode = payload.color_mode || "measurement";
       entry.maxAbs = Number(payload.max_abs) || 0;
       if (entry.overlay) {
-        entry.overlay.setProps({ layers: [entry.layer(payload.points)] });
+        entry.overlay.setProps({ layers: [entry.layer(visiblePoints(entry))] });
       }
       clearError(entry.element);
     } catch (error) {
@@ -163,11 +192,12 @@
         getFillColor: (point) =>
           entry.colorMode === "difference"
             ? differenceColorAt(point[2], entry.maxAbs)
-            : colorAt(point[2]),
-        getRadius: entry.colorMode === "difference" ? 42000 : 18000,
+            : measurementColor(entry, point),
+        getRadius:
+          entry.colorMode === "difference" ? 42000 : cellRadiusMeters,
         radiusUnits: "meters",
-        radiusMinPixels: 2.75,
-        radiusMaxPixels: 10,
+        radiusMinPixels: entry.colorMode === "difference" ? 1.5 : 0.75,
+        radiusMaxPixels: 40,
         opacity: 0.96,
         antialiasing: true,
         pickable: true,
