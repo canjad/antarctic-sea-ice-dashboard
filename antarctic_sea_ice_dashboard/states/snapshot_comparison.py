@@ -43,6 +43,7 @@ class ComparisonResult(TypedDict):
     globe_filename: str
     comparable_cells: int
     globe_max_abs: float
+    globe_scale_abs: float
     message: str
 
 
@@ -66,6 +67,9 @@ class SnapshotComparison(rx.State):
     globe_filename: str = ""
     comparable_cells: int = 0
     globe_max_abs: float = 0
+    # Colour-scale limit for the difference globe (95th percentile of |change|)
+    # so one extreme cell does not wash every other cell out to near-white.
+    globe_scale_abs: float = 0
     message: str = "Choose two uploaded snapshots to compare."
     loading: bool = False
     error: bool = False
@@ -74,6 +78,18 @@ class SnapshotComparison(rx.State):
     @staticmethod
     def _format_mean(value: float | None, units: str) -> str:
         return "—" if value is None else f"{value:.4g} {units}"
+
+    @staticmethod
+    def _robust_scale(magnitudes: list[float], max_abs: float) -> float:
+        """Return the 95th percentile of non-zero |change| for the colour scale.
+
+        Falls back to the true maximum when there are no non-zero changes.
+        """
+        nonzero = sorted(value for value in magnitudes if value > 0)
+        if not nonzero:
+            return max_abs
+        index = min(len(nonzero) - 1, int(0.95 * (len(nonzero) - 1)))
+        return nonzero[index] or max_abs
 
     @staticmethod
     def _summarize_group(
@@ -259,6 +275,7 @@ class SnapshotComparison(rx.State):
                 "globe_filename": "",
                 "comparable_cells": 0,
                 "globe_max_abs": 0,
+                "globe_scale_abs": 0,
                 "message": "",
             }
             if not period_a or not period_b:
@@ -315,6 +332,10 @@ class SnapshotComparison(rx.State):
                 max_abs = max(
                     abs(float(point[2])) for point in comparison_points
                 )
+                scale_abs = SnapshotComparison._robust_scale(
+                    [abs(float(point[2])) for point in comparison_points],
+                    max_abs,
+                )
                 filename = f"antarctic_comparison_{uuid4().hex}.json"
                 path: Path = rx.get_upload_dir() / filename
                 try:
@@ -325,6 +346,7 @@ class SnapshotComparison(rx.State):
                                 "points": comparison_points,
                                 "color_mode": "difference",
                                 "max_abs": max_abs,
+                                "scale_abs": scale_abs,
                                 "cell_size": "0.5° latitude × 1° longitude",
                             },
                             file,
@@ -343,7 +365,8 @@ class SnapshotComparison(rx.State):
                     raise
                 result["globe_filename"] = filename
                 result["comparable_cells"] = len(comparison_points)
-                result["globe_max_abs"] = max_abs
+                result["globe_max_abs"] = float(f"{max_abs:.3g}")
+                result["globe_scale_abs"] = float(f"{scale_abs:.3g}")
             if mean_a is None or mean_b is None:
                 result["difference"] = "—"
                 result["message"] = (
@@ -447,6 +470,7 @@ class SnapshotComparison(rx.State):
                     self.globe_filename = result["globe_filename"]
                     self.comparable_cells = result["comparable_cells"]
                     self.globe_max_abs = result["globe_max_abs"]
+                    self.globe_scale_abs = result["globe_scale_abs"]
                     self.message = result["message"]
                     self.loading = False
                     self.error = False

@@ -172,7 +172,10 @@
       if (entry.source !== source) return;
       entry.points = payload.points;
       entry.colorMode = payload.color_mode || "measurement";
-      entry.maxAbs = Number(payload.max_abs) || 0;
+      // Prefer the robust (95th percentile) colour limit when provided; values
+      // beyond it are drawn at full colour.
+      entry.maxAbs =
+        Number(payload.scale_abs) || Number(payload.max_abs) || 0;
       if (entry.overlay) {
         entry.overlay.setProps({ layers: [entry.layer(visiblePoints(entry))] });
       }
