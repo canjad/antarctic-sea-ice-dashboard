@@ -12,25 +12,91 @@
   // the ocean so the ice edge does not end in a hard dark rim.
   const iceEdgePercent = 15;
 
-  // Open water (0 % concentration) is most of the rectangular source grid.
-  // Drawing it paints a dark square over the ocean, so let the basemap's
-  // ocean show through instead.
+  // Width, in degrees of latitude, of the soft fade at the grid's outer edge.
+  const edgeFadeDegrees = 4;
+  // Difference markers are 0.5° latitude × 1° longitude bins.
+  const binLatitudeKm = 55.6;
+  const binLongitudeKmAtEquator = 111.3;
+
+  // The source data is a rectangular polar-stereographic grid. On a round
+  // globe its corners read as a square frame, so find the circle that fits
+  // inside the grid (the southernmost of the grid's northern edges) and fade
+  // the layer out towards it.
+  const gridEdgeLatitude = (points) => {
+    const northernmost = new Map();
+    for (const point of points) {
+      const bin = Math.floor((Number(point[0]) + 180) / 5);
+      const latitude = Number(point[1]);
+      if (!(northernmost.get(bin) >= latitude)) {
+        northernmost.set(bin, latitude);
+      }
+    }
+    // Only clip data that wraps all the way around the pole.
+    if (northernmost.size < 72) return null;
+    return Math.min(...northernmost.values());
+  };
+
+  const isConcentrationPoint = (entry, point) =>
+    entry.colorMode === "difference"
+      ? point[7] === "%"
+      : entry.isConcentration;
+
+  // Open water (0 % concentration, or 0 % in both compared snapshots) is most
+  // of the rectangular source grid. Drawing it paints a square over the
+  // ocean, so let the basemap's ocean show through instead.
   const visiblePoints = (entry) => {
     const measurement =
       entry.element.getAttribute("data-globe-measurement") || "";
     entry.isConcentration =
       entry.colorMode === "measurement" && /concentration/i.test(measurement);
-    if (!entry.isConcentration) return entry.points;
-    return entry.points.filter((point) => Number(point[3]) > 0);
+    entry.edgeLatitude = gridEdgeLatitude(entry.points);
+    return entry.points.filter((point) => {
+      if (isConcentrationPoint(entry, point)) {
+        return entry.colorMode === "difference"
+          ? Number(point[3]) > 0 || Number(point[4]) > 0
+          : Number(point[3]) > 0;
+      }
+      return (
+        entry.edgeLatitude === null || Number(point[1]) < entry.edgeLatitude
+      );
+    });
+  };
+
+  // 0–1 opacity factor for the soft circular edge (not applied to sea ice,
+  // which never reaches the grid edge and is already free of the square).
+  const edgeFade = (entry, point) => {
+    if (entry.edgeLatitude === null || isConcentrationPoint(entry, point)) {
+      return 1;
+    }
+    return Math.max(
+      0,
+      Math.min(1, (entry.edgeLatitude - Number(point[1])) / edgeFadeDegrees),
+    );
   };
 
   const measurementColor = (entry, point) => {
     const color = colorAt(point[2]);
+    let fade = edgeFade(entry, point);
     if (entry.isConcentration) {
-      const fade = Math.min(1, Number(point[3]) / iceEdgePercent);
-      color[3] = Math.round(color[3] * fade);
+      fade *= Math.min(1, Number(point[3]) / iceEdgePercent);
     }
+    color[3] = Math.round(color[3] * fade);
     return color;
+  };
+
+  const differenceColor = (entry, point) => {
+    const color = differenceColorAt(point[2], entry.maxAbs);
+    color[3] = Math.round(color[3] * edgeFade(entry, point));
+    return color;
+  };
+
+  // Size each difference marker to its bin, which narrows towards the pole,
+  // so markers next to the coast do not spill onto land.
+  const differenceRadius = (point) => {
+    const longitudeKm =
+      binLongitudeKmAtEquator *
+      Math.max(0.05, Math.cos((Number(point[1]) * Math.PI) / 180));
+    return 550 * Math.sqrt(binLatitudeKm * longitudeKm);
   };
 
   // Map measurement and signed-difference values to the two legend scales.
@@ -66,7 +132,8 @@
       ...neutral.map((channel, index) =>
         Math.round(channel + (endpoint[index] - channel) * amount),
       ),
-      235,
+      // Near-zero change stays faint so it does not hide the basemap.
+      Math.round(235 * Math.max(0.3, Math.min(1, amount * 2.5))),
     ];
   };
 
@@ -191,12 +258,14 @@
         ],
         getFillColor: (point) =>
           entry.colorMode === "difference"
-            ? differenceColorAt(point[2], entry.maxAbs)
+            ? differenceColor(entry, point)
             : measurementColor(entry, point),
         getRadius:
-          entry.colorMode === "difference" ? 42000 : cellRadiusMeters,
+          entry.colorMode === "difference"
+            ? differenceRadius
+            : cellRadiusMeters,
         radiusUnits: "meters",
-        radiusMinPixels: entry.colorMode === "difference" ? 1.5 : 0.75,
+        radiusMinPixels: 0.75,
         radiusMaxPixels: 40,
         opacity: 0.96,
         antialiasing: true,
