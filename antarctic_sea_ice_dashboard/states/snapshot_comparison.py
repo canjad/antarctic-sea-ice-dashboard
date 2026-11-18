@@ -178,6 +178,7 @@ class SnapshotComparison(rx.State):
         requested_a: str = "",
         requested_b: str = "",
         requested_measurement: str = "",
+        keep_b: bool = False,
     ) -> ComparisonResult:
         with rx.session() as session:
             datasets = session.scalars(
@@ -218,27 +219,38 @@ class SnapshotComparison(rx.State):
                 if requested_a in group_labels
                 else (keys[0] if keys else "")
             )
-            period_b = (
-                requested_b
-                if requested_b in group_labels
-                else (keys[1] if len(keys) > 1 else "")
-            )
+            def available(period: str) -> set[str]:
+                return {
+                    key
+                    for key, _, _ in MEASUREMENT_FIELDS
+                    if any(
+                        mapping.get(key)
+                        for summary, mapping, _ in catalog
+                        if summary["group_key"] == period
+                    )
+                }
+
+            available_a = available(period_a)
+            if requested_b in group_labels and (
+                keep_b or available(requested_b) & available_a
+            ):
+                period_b = requested_b
+            else:
+                # Default to the most recent other snapshot that shares a
+                # measurement with the first, so the view has a map. An
+                # explicit second-snapshot choice (keep_b) is respected.
+                others = [key for key in keys if key != period_a]
+                period_b = next(
+                    (key for key in others if available(key) & available_a),
+                    others[0] if others else "",
+                )
             rows_a = [
                 item for item in catalog if item[0]["group_key"] == period_a
             ]
             rows_b = [
                 item for item in catalog if item[0]["group_key"] == period_b
             ]
-            available_a = {
-                key
-                for key, _, _ in MEASUREMENT_FIELDS
-                if any(mapping.get(key) for _, mapping, _ in rows_a)
-            }
-            available_b = {
-                key
-                for key, _, _ in MEASUREMENT_FIELDS
-                if any(mapping.get(key) for _, mapping, _ in rows_b)
-            }
+            available_b = available(period_b)
             common = available_a & available_b if period_b else available_a
             measurements = [
                 {"key": key, "label": label, "units": units}
@@ -412,7 +424,7 @@ class SnapshotComparison(rx.State):
         if value and value not in {group["key"] for group in self.groups}:
             return
         self.period_b = value
-        return self._start_comparison()
+        return self._start_comparison(keep_b=True)
 
     @rx.event
     def select_measurement(self, value: str):
@@ -421,7 +433,7 @@ class SnapshotComparison(rx.State):
         self.measurement_key = value
         return self._start_comparison()
 
-    def _start_comparison(self):
+    def _start_comparison(self, keep_b: bool = False):
         self.request_id += 1
         self.loading = True
         self.error = False
@@ -431,6 +443,7 @@ class SnapshotComparison(rx.State):
             self.period_a,
             self.period_b,
             self.measurement_key,
+            keep_b,
         )
 
     @rx.event(background=True)
@@ -440,6 +453,7 @@ class SnapshotComparison(rx.State):
         period_a: str,
         period_b: str,
         measurement_key: str,
+        keep_b: bool = False,
     ):
         """Compute comparable summaries and matched-cell differences in a worker."""
         try:
@@ -448,6 +462,7 @@ class SnapshotComparison(rx.State):
                 period_a,
                 period_b,
                 measurement_key,
+                keep_b,
             )
             previous = ""
             async with self:

@@ -19,6 +19,7 @@ from antarctic_sea_ice_dashboard.models import (
     UploadedDataset,
     UploadedDatasetRow,
 )
+from antarctic_sea_ice_dashboard.states.antarctic_globe import AntarcticGlobe
 from antarctic_sea_ice_dashboard.states.uploaded_data import (
     MAX_ROWS,
     UploadedData,
@@ -317,6 +318,12 @@ class PredictionInsights(rx.State):
                 self.matched_points = result["matched_points"]
                 self.observation_files = result["observation_files"]
                 self.message = result["message"]
+            # Show the recorded concentration the prediction was scored
+            # against, rather than whatever Map Explorer last displayed.
+            if result["snapshot"]:
+                yield AntarcticGlobe.show_snapshot(
+                    result["snapshot"], "sea_ice_concentration"
+                )
         except Exception as error:
             logging.exception("Could not calculate prediction accuracy.")
             async with self:
