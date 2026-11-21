@@ -97,6 +97,45 @@ class AntarcticGlobe(rx.State):
         return parse_number(value)
 
     @staticmethod
+    def _grid_edge_latitude(points: list[list]) -> float | None:
+        """Latitude of the largest circle around the pole inside the data.
+
+        Mirrors ``gridEdgeLatitude`` in ``assets/antarctic_globe.js``: a
+        rectangular polar grid is faded out beyond this circle so it does not
+        read as a square frame on the globe. Only data that surrounds the
+        pole (all 72 five-degree longitude bins) is clipped.
+        """
+        northernmost: dict[int, float] = {}
+        for point in points:
+            longitude_bin = int((float(point[0]) + 180) // 5)
+            latitude = float(point[1])
+            if latitude > northernmost.get(longitude_bin, -91.0):
+                northernmost[longitude_bin] = latitude
+        if len(northernmost) < 72:
+            return None
+        return min(northernmost.values())
+
+    @staticmethod
+    def _drawn_range(
+        points: list[list], measurement_key: str
+    ) -> tuple[float, float] | None:
+        """Colour-scale range of the values the globe actually draws.
+
+        Values in the clipped grid corners (e.g. 17 °C SST near 40°S) would
+        otherwise stretch the scale so every drawn cell is the same dark
+        colour. Sea-ice concentration keeps its full range.
+        """
+        if measurement_key == "sea_ice_concentration" or not points:
+            return None
+        edge = AntarcticGlobe._grid_edge_latitude(points)
+        if edge is None:
+            return None
+        drawn = [float(point[3]) for point in points if float(point[1]) < edge]
+        if not drawn:
+            return None
+        return min(drawn), max(drawn)
+
+    @staticmethod
     def _cells(raw: str, column_count: int) -> list[str] | None:
         try:
             cells = json.loads(raw)
@@ -344,6 +383,11 @@ class AntarcticGlobe(rx.State):
                     )
                     all_values.append(value)
 
+            drawn_range = AntarcticGlobe._drawn_range(
+                points, measurement_key
+            )
+            if drawn_range is not None:
+                scale_min, scale_max = drawn_range
             if scale_min is not None and scale_max is not None:
                 span = scale_max - scale_min
                 for point in points:
@@ -431,6 +475,31 @@ class AntarcticGlobe(rx.State):
         self.message = "Loading the selected snapshot…"
         return AntarcticGlobe.render(
             self.request_id, value, self.measurement_key
+        )
+
+    @rx.event
+    def show_snapshot(self, group: str, measurement_key: str):
+        """Point the globe at a snapshot/measurement chosen by another page.
+
+        Used by Model Insights so its globe shows the recorded observations
+        for the selected prediction instead of whatever Map Explorer last
+        displayed. Unknown snapshots leave the globe unchanged.
+        """
+        if self.groups and group not in {item["key"] for item in self.groups}:
+            return
+        if (
+            group == self.selected_group
+            and measurement_key == self.measurement_key
+            and self.filename
+        ):
+            return
+        self.selected_group = group
+        self.measurement_key = measurement_key
+        self.request_id += 1
+        self.status = "loading"
+        self.message = "Loading the prediction's snapshot…"
+        return AntarcticGlobe.render(
+            self.request_id, group, measurement_key
         )
 
     @rx.event
