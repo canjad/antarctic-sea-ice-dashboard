@@ -193,7 +193,7 @@ macOS equivalent of the PowerShell test command in `docs/testing.md`:
 PYTEST_CURRENT_TEST=unittest-discovery .venv/bin/python -c 'import logging,sys,unittest; logging.getLogger().setLevel(logging.CRITICAL); r=unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.discover("scripts")); sys.exit(not r.wasSuccessful())'
 ```
 
-Verified result: `Ran 73 tests ... OK`.
+Verified result (2026-11-23): `Ran 92 tests ... OK`.
 
 ---
 

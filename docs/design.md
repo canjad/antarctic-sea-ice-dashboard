@@ -19,17 +19,55 @@ covered by regression tests and is kept for reference.
 
 ### Import and configure a dataset
 
-1. A user supplies one UTF-8 CSV and a required year/month snapshot label in
-   the Data workspace.
-2. The upload is limited to 20 MiB, 120,000 data rows, 10 columns, and 32,768
+1. A user supplies one CSV and a required year/month snapshot label in the
+   Data workspace. UTF-8 (with or without BOM) is preferred; UTF-16 with a BOM,
+   GB18030/GBK and Windows-1252 are accepted as fallbacks, and the success
+   message names the encoding when a fallback was used.
+2. The upload is limited to 20 MiB, 400,000 data rows, 10 columns, and 32,768
    characters per cell. Headers and values are retained as strings to preserve
    source spelling and leading zeroes.
-3. The CSV parser rejects malformed encodings, duplicate or blank headers,
+3. The CSV parser rejects undecodable files, duplicate or blank headers,
    malformed rows, invalid quoting, and limit violations before persistence.
+   Fully blank rows (including Excel's `,,,` rows) and empty, header-less
+   trailing columns are skipped and reported; a header-less column that holds
+   data is rejected.
 4. Dataset metadata and ordered JSON row values are inserted in a database
    transaction. Importing does not silently activate a map layer.
 5. A user explicitly maps latitude, longitude, and at least one supported
    numeric measurement; valid mappings can then be activated as globe layers.
+   The mapping also stores a concentration/prediction unit setting
+   (auto-detect, 0–1 fraction, or 0–100 percent) and a prediction type
+   (concentration, or extent probability/class).
+6. Row edits and additions are checked against the saved mapping: mapped
+   coordinate and measurement cells must be blank or pass the cleaning rules
+   below. A dataset whose saved metadata cannot be read is listed as not ready
+   instead of preventing the rest of the catalogue from loading.
+
+### Shared cleaning rules
+
+[`cleaning.py`](../antarctic_sea_ice_dashboard/cleaning.py) is the single
+source of numeric-cleaning rules for Map Explorer, Compare, Model Insights and
+the Data row editor, so the same stored cell is judged the same way on every
+page:
+
+- Missing-value tokens (blank, `NA`, `N/A`, `NaN`, `null`, `none`, `-`, `--`,
+  `?`, `missing`) are skipped as no value.
+- Numbers must be plain decimals or scientific notation. Commas are accepted
+  only as unambiguous thousands separators (`1,234`, `12,345.6`); a decimal
+  comma such as `0,5` is rejected rather than read as 5. Non-finite values are
+  rejected.
+- Latitude must be −90 to 90. Longitude may be −180 to 180 or 0 to 360;
+  0–360 values are normalized to −180 to 180.
+- After unit scaling, values must fall within plausible physical ranges, which
+  excludes fill values such as −999: concentration and prediction 0–100 %,
+  sea-surface temperature −3 to 40 °C, wind speed 0 to 100 m/s, air
+  temperature −95 to 60 °C.
+- In auto mode a concentration/prediction file is treated as 0–1 fractions
+  when it has no in-range values above 1, or when values strictly between 0 and
+  1 outnumber values above 1; otherwise it is treated as percent. The explicit
+  unit setting overrides this detection.
+- Extent predictions are scored against observed concentration thresholded at
+  15 %, the conventional sea-ice extent threshold.
 
 The relevant state and persistence logic is in
 [`states/uploaded_data.py`](../antarctic_sea_ice_dashboard/states/uploaded_data.py)
@@ -44,9 +82,11 @@ and [`components/overview_source.py`](../antarctic_sea_ice_dashboard/components/
   enabled CSV layers can be shown for one group. Only finite measurements and
   finite in-range geographic coordinates are rendered.
 - The measurement selector only offers supported mapped columns. Sea-ice
-  concentration values are converted from fractions to percent when every
-  valid reading in that CSV is at most 1; other supported measurements retain
-  their observed units.
+  concentration values are converted from fractions to percent per CSV
+  according to the unit setting or auto-detection described under
+  [Shared cleaning rules](#shared-cleaning-rules); other supported measurements
+  retain their observed units. All measurements are filtered by the physical
+  ranges listed there.
 - Compare pools all eligible mapped files for each of two selected snapshots,
   computes valid-reading means and counts, and optionally builds a difference
   globe from matched 0.5-degree latitude by 1-degree longitude cells.
@@ -117,12 +157,12 @@ pixel inspection behavior are described in
 - Latitude/longitude columns are the map position source. A point's visual
   elevation and a comparison cell's bin size are display choices, not
   measurements of thickness, terrain, cell area, or scientific resolution.
-- Concentration normalization is applied per CSV under the documented
-  all-valid-values-at-most-1 rule. Map Explorer derives one observed
+- Concentration normalization is applied per CSV using the saved unit setting
+  or the distribution-based auto-detection in `cleaning.py`. Map Explorer derives one observed
   min/max range per selected measurement across all mapped CSVs, independent
   of snapshot group and layer activation, so the globe colors and legend remain
-  comparable when switching dates. The app does not infer a concentration
-  unit, validate sensor quality, interpolate observations, or compute
+  comparable when switching dates. Beyond that unit heuristic and the
+  physical-range filter, the app does not validate sensor quality, interpolate observations, or compute
   area-weighted extent.
 - The browser requires external access to the basemap and JavaScript/font CDNs.
   Data loading and database failures are shown as errors rather than replaced
