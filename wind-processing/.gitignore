@@ -1,0 +1,15 @@
+# Code-only repository: allow only the files listed below.
+# Add explicit entries here when introducing new source folders or documentation.
+*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/10m v wind speed/
+
+/10m v wind speed/*
+!/10m v wind speed/*.py
+!/10m v wind speed/requirements-v-wind.txt
+!/10m v wind speed/wind_pipeline/
+
+/10m v wind speed/wind_pipeline/*
+!/10m v wind speed/wind_pipeline/*.py

@@ -1,0 +1,15 @@
+*.db
+*.py[cod]
+.web
+__pycache__/
+assets/external/
+.states
+.data/
+.scratch/phase-4/baseline/
+.scratch/phase-4/initial-tracked.diff
+
+.scratch/integration-validation/
+
+.pytest_cache/
+
+assets/external/

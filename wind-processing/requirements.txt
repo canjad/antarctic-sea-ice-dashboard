@@ -1,0 +1,2 @@
+# Keep the pipeline's existing pinned dependencies in one place.
+-r "10m v wind speed/requirements-v-wind.txt"
